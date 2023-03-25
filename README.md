@@ -6,7 +6,7 @@ This is a summary I created for an "esp32-s3-DevKitC-1 v1.1" featuring a ESP32-S
 
 This tutorial is based on https://github.com/cmbahadir/opcua-esp32 and primarily on https://github.com/Pro/open62541-esp32. Thank you to both authors!
 
-Since the esp32-s3 is only fully supported with sdk 4.4 I checked out this sdk-version (support until 2024) and continued according to https://github.com/Pro/open62541-esp32. FYI: Switch to the examples directory in the SDK, check out Pro's repo and update the submodules
+Since the esp32-s3 is only fully supported with sdk 4.4 I checked out this sdk-version (support until 2024) FYI: Switch to the examples directory in the SDK, check out my branch and update the submodules as described in Pro's repo.
 
 Please mind the following steps, that are in this case specific to the dev board I used:
 - Adjust the main.c to this, so it fits the chip I use:
