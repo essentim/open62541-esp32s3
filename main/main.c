@@ -10,33 +10,29 @@
 #include <esp_event.h>
 #include <esp_log.h>
 #include <esp_system.h>
+#include <esp_wifi.h>
 #include <sys/param.h>
 #include <nvs_flash.h>
+#include <esp_netif.h>
+#include <esp_flash.h>
+#include <esp_task_wdt.h>
+#include <esp_sntp.h>
+#include <esp_chip_info.h>
 
 #include <stdio.h>
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/event_groups.h"
 
-#include "esp_netif.h"
-#include "ethernet_helper.h"
 
-#ifdef CONFIG_IDF_TARGET_ESP32
-#define CHIP_NAME "ESP32"
-#endif
+#include <open62541.h>
 
-#ifdef CONFIG_IDF_TARGET_ESP32S2BETA
-#define CHIP_NAME "ESP32-S2 Beta"
-#endif
+#define CHIP_NAME "ESP32S3"
 
 #ifndef UA_ARCHITECTURE_FREERTOSLWIP
 #error UA_ARCHITECTURE_FREERTOSLWIP needs to be defined
 #endif
-
-#include <open62541.h>
-
-#include <esp_task_wdt.h>
-#include <esp_sntp.h>
 
 #define ENABLE_MDNS
 
@@ -50,6 +46,46 @@ static bool serverCreated = false;
  * maintains its value when ESP32 wakes from deep sleep.
  */
 RTC_DATA_ATTR static int boot_count = 0;
+
+/* Set the SSID and Password via project configuration, or can set directly here */
+#define DEFAULT_SSID CONFIG_EXAMPLE_WIFI_SSID
+#define DEFAULT_PWD CONFIG_EXAMPLE_WIFI_PASSWORD
+
+#if CONFIG_EXAMPLE_WIFI_ALL_CHANNEL_SCAN
+#define DEFAULT_SCAN_METHOD WIFI_ALL_CHANNEL_SCAN
+#elif CONFIG_EXAMPLE_WIFI_FAST_SCAN
+#define DEFAULT_SCAN_METHOD WIFI_FAST_SCAN
+#else
+#define DEFAULT_SCAN_METHOD WIFI_FAST_SCAN
+#endif /*CONFIG_EXAMPLE_SCAN_METHOD*/
+
+#if CONFIG_EXAMPLE_WIFI_CONNECT_AP_BY_SIGNAL
+#define DEFAULT_SORT_METHOD WIFI_CONNECT_AP_BY_SIGNAL
+#elif CONFIG_EXAMPLE_WIFI_CONNECT_AP_BY_SECURITY
+#define DEFAULT_SORT_METHOD WIFI_CONNECT_AP_BY_SECURITY
+#else
+#define DEFAULT_SORT_METHOD WIFI_CONNECT_AP_BY_SIGNAL
+#endif /*CONFIG_EXAMPLE_SORT_METHOD*/
+
+#if CONFIG_EXAMPLE_FAST_SCAN_THRESHOLD
+#define DEFAULT_RSSI CONFIG_EXAMPLE_FAST_SCAN_MINIMUM_SIGNAL
+#if CONFIG_EXAMPLE_FAST_SCAN_WEAKEST_AUTHMODE_OPEN
+#define DEFAULT_AUTHMODE WIFI_AUTH_OPEN
+#elif CONFIG_EXAMPLE_FAST_SCAN_WEAKEST_AUTHMODE_WEP
+#define DEFAULT_AUTHMODE WIFI_AUTH_WEP
+#elif CONFIG_EXAMPLE_FAST_SCAN_WEAKEST_AUTHMODE_WPA
+#define DEFAULT_AUTHMODE WIFI_AUTH_WPA_PSK
+#elif CONFIG_EXAMPLE_FAST_SCAN_WEAKEST_AUTHMODE_WPA2
+#define DEFAULT_AUTHMODE WIFI_AUTH_WPA2_PSK
+#else
+#define DEFAULT_AUTHMODE WIFI_AUTH_OPEN
+#endif
+#else
+#define DEFAULT_RSSI -127
+#define DEFAULT_AUTHMODE WIFI_AUTH_OPEN
+#endif /*CONFIG_EXAMPLE_FAST_SCAN_THRESHOLD*/
+
+static const char *TAG_WIFI = "scan";
 
 static UA_StatusCode
 UA_ServerConfig_setUriName(UA_ServerConfig *uaServerConfig, const char *uri, const char *name) {
@@ -84,7 +120,7 @@ static void opcua_task(void *arg) {
     UA_UInt32 sendBufferSize = 16000;       //64 KB was too much for my platform
     UA_UInt32 recvBufferSize = 16000;       //64 KB was too much for my platform
 
-    ESP_LOGI(TAG_OPC, "Initializing OPC UA. Free Heap: %d bytes", xPortGetFreeHeapSize());
+    ESP_LOGI(TAG_OPC, "Initializing OPC UA. Free Heap: %ld bytes", xPortGetFreeHeapSize());
 
 
     UA_Server *server = UA_Server_new();
@@ -104,8 +140,8 @@ static void opcua_task(void *arg) {
     config->mdnsConfig.serverCapabilities = caps;
 
     // We need to set the default IP address for mDNS since internally it's not able to detect it.
-    tcpip_adapter_ip_info_t default_ip;
-    esp_err_t ret = tcpip_adapter_get_ip_info(TCPIP_ADAPTER_IF_STA, &default_ip);
+    esp_netif_ip_info_t default_ip;
+    esp_err_t ret = esp_netif_get_ip_info(ESP_IF_WIFI_STA, &default_ip);
     if ((ESP_OK == ret) && (default_ip.ip.addr != INADDR_ANY)) {
         config->mdnsIpAddressListSize = 1;
         config->mdnsIpAddressList = (uint32_t *)UA_malloc(sizeof(uint32_t)*config->mdnsIpAddressListSize);
@@ -116,19 +152,12 @@ static void opcua_task(void *arg) {
     #endif
     UA_ServerConfig_setUriName(config, appUri, "open62541 ESP32 Demo");
 
-    #ifndef CONFIG_ETHERNET_HELPER_CUSTOM_HOSTNAME
-        #ifndef ETHERNET_HELPER_STATIC_IP4
-            #error You need to set a static IP or a custom hostname with menuconfig
-        #else
-        UA_String str = UA_STRING(CONFIG_ETHERNET_HELPER_STATIC_IP4_ADDRESS);
-        #endif
-    #else
-    UA_String str = UA_STRING(CONFIG_ETHERNET_HELPER_CUSTOM_HOSTNAME_STR);
-    #endif
+
+    UA_String str = UA_STRING("open62541-esp32s3");
     UA_String_clear(&config->customHostname);
     UA_String_copy(&str, &config->customHostname);
 
-    printf("xPortGetFreeHeapSize before create = %d bytes\n", xPortGetFreeHeapSize());
+    printf("xPortGetFreeHeapSize before create = %ld bytes\n", xPortGetFreeHeapSize());
 
     UA_StatusCode retval = UA_Server_run_startup(server);
     if (retval != UA_STATUSCODE_GOOD) {
@@ -136,38 +165,27 @@ static void opcua_task(void *arg) {
         return;
     }
 
-    ESP_LOGI(TAG_OPC, "Starting server loop. Free Heap: %d bytes", xPortGetFreeHeapSize());
+    ESP_LOGI(TAG_OPC, "Starting server loop. Free Heap: %ld bytes", xPortGetFreeHeapSize());
 
     while (true) {
-        UA_Server_run_iterate(server, false);
+        uint16_t delay = UA_Server_run_iterate(server, false);
         ESP_ERROR_CHECK(esp_task_wdt_reset());
         taskYIELD();
+        vTaskDelay(delay / portTICK_PERIOD_MS);
     }
     UA_Server_run_shutdown(server);
 
     ESP_ERROR_CHECK(esp_task_wdt_delete(NULL));
 }
 
-
-static void disconnect_handler(void* arg, esp_event_base_t event_base,
-                               int32_t event_id, void* event_data)
-{
-    /* UA_Server *server = *(UA_Server**) arg;
-    if (server) {
-        ESP_LOGI(TAG, "Stopping webserver");
-        stop_webserver(*server);
-        *server = NULL;
-    }*/
-}
-
 void time_sync_notification_cb(struct timeval *tv)
 {
-    ESP_LOGI(TAG, "Notification of a time synchronization event");
+    ESP_LOGI(TAG_WIFI, "Notification of a time synchronization event");
 }
 
 static void initialize_sntp(void)
 {
-    ESP_LOGI(TAG, "Initializing SNTP");
+    ESP_LOGI(TAG_WIFI, "Initializing SNTP");
     sntp_setoperatingmode(SNTP_OPMODE_POLL);
     sntp_setservername(0, "pool.ntp.org");
     sntp_set_time_sync_notification_cb(time_sync_notification_cb);
@@ -186,7 +204,7 @@ static bool obtain_time(void)
     int retry = 0;
     const int retry_count = 10;
     while (sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET && ++retry <= retry_count) {
-        ESP_LOGI(TAG, "Waiting for system time to be set... (%d/%d)", retry, retry_count);
+        ESP_LOGI(TAG_WIFI, "Waiting for system time to be set... (%d/%d)", retry, retry_count);
         vTaskDelay(2000 / portTICK_PERIOD_MS);
         ESP_ERROR_CHECK(esp_task_wdt_reset());
     }
@@ -196,33 +214,74 @@ static bool obtain_time(void)
     return timeinfo.tm_year > (2016 - 1900);
 }
 
-static void connect_handler(void* arg, esp_event_base_t event_base,
-                            int32_t event_id, void* event_data)
+static void event_handler(void* arg, esp_event_base_t event_base,
+                                int32_t event_id, void* event_data)
 {
-    ESP_LOGI(TAG, "WIFI Connected");
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        esp_wifi_connect();
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        esp_wifi_connect();
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
+        ESP_LOGI(TAG_WIFI, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
 
-    time_t now;
-    struct tm timeinfo;
-    time(&now);
-    localtime_r(&now, &timeinfo);
-    // Is time set? If not, tm_year will be (1970 - 1900).
-    if (timeinfo.tm_year < (2016 - 1900)) {
-        ESP_LOGI(TAG, "Time is not set yet. Connecting to WiFi and getting time over NTP.");
-        if (!obtain_time()) {
-            ESP_LOGE(TAG, "Could not get time from NTP. Using default timestamp.");
-        }
-        // update 'now' variable with current time
+        ESP_LOGI(TAG_WIFI, "WIFI Connected");
+
+        time_t now;
+        struct tm timeinfo;
         time(&now);
-    }
-    localtime_r(&now, &timeinfo);
-    ESP_LOGI(TAG, "Current time: %d-%02d-%02d %02d:%02d:%02d", timeinfo.tm_year + 1900, timeinfo.tm_mon+1, timeinfo.tm_mday, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+        localtime_r(&now, &timeinfo);
+        // Is time set? If not, tm_year will be (1970 - 1900).
+        if (timeinfo.tm_year < (2016 - 1900)) {
+            ESP_LOGI(TAG_WIFI, "Time is not set yet. Connecting to WiFi and getting time over NTP.");
+            if (!obtain_time()) {
+                ESP_LOGE(TAG_WIFI, "Could not get time from NTP. Using default timestamp.");
+            }
+            // update 'now' variable with current time
+            time(&now);
+        }
+        localtime_r(&now, &timeinfo);
+        ESP_LOGI(TAG_WIFI, "Current time: %d-%02d-%02d %02d:%02d:%02d", timeinfo.tm_year + 1900, timeinfo.tm_mon+1, timeinfo.tm_mday, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
 
-    if (!serverCreated) {
-        ESP_LOGI(TAG, "Starting OPC UA Task");
-        // We need a big stack depth here. You may adapt it if necessary
-        xTaskCreate(opcua_task, "opcua_task", 24336, NULL, 10, NULL);
-        serverCreated = true;
+        if (!serverCreated) {
+            ESP_LOGI(TAG_WIFI, "Starting OPC UA Task");
+            // We need a big stack depth here. You may adapt it if necessary
+            xTaskCreate(opcua_task, "opcua_task", 24336 * 4, NULL, 10, NULL);
+            serverCreated = true;
+        }
     }
+}
+
+
+/* Initialize Wi-Fi as sta and set scan method */
+static void fast_scan(void)
+{
+    ESP_ERROR_CHECK(esp_netif_init());
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL, NULL));
+
+    // Initialize default station as network interface instance (esp-netif)
+    esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
+    assert(sta_netif);
+
+    // Initialize and start WiFi
+    wifi_config_t wifi_config = {
+        .sta = {
+            .ssid = DEFAULT_SSID,
+            .password = DEFAULT_PWD,
+            .scan_method = DEFAULT_SCAN_METHOD,
+            .sort_method = DEFAULT_SORT_METHOD,
+            .threshold.rssi = DEFAULT_RSSI,
+            .threshold.authmode = DEFAULT_AUTHMODE,
+        },
+    };
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
 }
 
 void app_main(void)
@@ -239,45 +298,22 @@ void app_main(void)
            (chip_info.features & CHIP_FEATURE_BT) ? "/BT" : "",
            (chip_info.features & CHIP_FEATURE_BLE) ? "/BLE" : "");
 
-    spi_flash_init();
-
     printf("silicon revision %d, ", chip_info.revision);
-
-    printf("%dMB %s flash\n", spi_flash_get_chip_size() / (1024 * 1024),
+    uint32_t size_flash_chip;
+    esp_flash_get_size(NULL, &size_flash_chip);
+    printf("%ldMB %s flash\n", size_flash_chip / (1024 * 1024),
            (chip_info.features & CHIP_FEATURE_EMB_FLASH) ? "embedded" : "external");
 
     printf("Heap Info:\n");
     printf("\tInternal free: %d bytes\n", heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     printf("\tSPI free: %d bytes\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     printf("\tDefault free: %d bytes\n", heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
-    printf("\tAll free: %d bytes\n", xPortGetFreeHeapSize());
-
-
-    //static UA_Server *server = NULL;
+    printf("\tAll free: %ld bytes\n", xPortGetFreeHeapSize());
 
     ESP_ERROR_CHECK(nvs_flash_init());
-    esp_netif_init();
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-
-    ESP_ERROR_CHECK(esp_task_wdt_init(10, true));
-    // Remove idle tasks from watchdog
-    ESP_ERROR_CHECK(esp_task_wdt_delete(xTaskGetIdleTaskHandleForCPU(0)));
-    ESP_ERROR_CHECK(esp_task_wdt_delete(xTaskGetIdleTaskHandleForCPU(1)));
-
-    /* Register event handlers to stop the server when Wi-Fi or Ethernet is disconnected,
-     * and re-start it upon connection.
-     */
-#ifdef CONFIG_ETHERNET_HELPER_WIFI
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &connect_handler, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &disconnect_handler, NULL));
-#endif // CONFIG_ETHERNET_HELPER_WIFI
-#ifdef CONFIG_ETHERNET_HELPER_ETHERNET
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, &connect_handler, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ETHERNET_EVENT_DISCONNECTED, &disconnect_handler, NULL));
-#endif // CONFIG_ETHERNET_HELPER_ETHERNET
 
     ESP_LOGI(TAG, "Waiting for wifi connection. OnConnect will start OPC UA...");
 
-    ESP_ERROR_CHECK(ethernet_helper_connect());
-
+    fast_scan();
 }

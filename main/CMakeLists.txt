@@ -1,7 +1,7 @@
 
 idf_component_register(SRCS "main.c"
-                       PRIV_INCLUDE_DIRS ${IDF_PATH}/components/freertos/include/freertos
-                       REQUIRES open62541 ethernet_helper nvs_flash esp_adc_cal)
+                       PRIV_INCLUDE_DIRS ${IDF_PATH}/components/freertos/FreeRTOS-Kernel/include/freertos 
+                       REQUIRES open62541 nvs_flash esp_adc esp_event esp_wifi spi_flash driver)
 
 # Build static library, do not build test executables
 option(BUILD_SHARED_LIBS OFF)

@@ -9,12 +9,12 @@ endif()
 idf_component_register(
         SRCS custom_getaddrinfo.c
         REQUIRES lwip vfs freertos ${ADDITIONAL_REQUIRES}
-        PRIV_INCLUDE_DIRS ${IDF_PATH}/components/freertos/include/freertos
+        PRIV_INCLUDE_DIRS ${IDF_PATH}/components/freertos/FreeRTOS-Kernel/include/freertos
 )
 
 set_property(SOURCE ${CMAKE_BINARY_DIR}/open62541/open62541.c PROPERTY GENERATED 1)
 target_sources(${COMPONENT_LIB} PRIVATE ${CMAKE_BINARY_DIR}/open62541/open62541.c)
-target_include_directories(${COMPONENT_LIB} PUBLIC ${CMAKE_BINARY_DIR}/open62541)
+target_include_directories(${COMPONENT_LIB} PUBLIC ${CMAKE_BINARY_DIR}/open62541 ${IDF_PATH}/components/freertos/FreeRTOS-Kernel/include/freertos/)
 
 set(open62541_OPTIONS
     "-DUA_ARCHITECTURE=freertosLWIP"
@@ -23,7 +23,7 @@ set(open62541_OPTIONS
     "-DUA_ENABLE_SUBSCRIPTIONS_EVENTS=ON"
     "-DUA_ENABLE_DISCOVERY=ON"
     "-DUA_ENABLE_DISCOVERY_MULTICAST=ON"
-    "-DUA_ENABLE_TYPEDESCRIPTION=OFF"
+    "-DUA_ENABLE_TYPEDESCRIPTION=ON"
     "-DUA_ENABLE_STATUSCODE_DESCRIPTIONS=ON"
     "-DUA_LOGLEVEL=300"
     "-DUA_ENABLE_NODESET_COMPILER_DESCRIPTIONS=OFF"
@@ -48,4 +48,4 @@ externalproject_add(open62541_build
                     )
 
 add_dependencies(${COMPONENT_TARGET} open62541_build)
-target_compile_options(${COMPONENT_LIB} PUBLIC -DUA_getaddrinfo=custom_getaddrinfo -DUA_ENABLE_AMALGAMATION -DUA_ARCHITECTURE_FREERTOSLWIP -DUA_ARCHITECTURE_FREERTOSLWIP_POSIX_CLOCK)
+target_compile_options(${COMPONENT_LIB} PUBLIC -DUA_getaddrinfo=custom_getaddrinfo -DUA_ENABLE_AMALGAMATION -DUA_ARCHITECTURE_FREERTOSLWIP -DUA_ARCHITECTURE_FREERTOSLWIP_POSIX_CLOCK -mtext-section-literals)
